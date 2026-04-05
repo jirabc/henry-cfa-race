@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Henry's CFA Race!</title>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+    body { background:#1a0f05; height:100vh; overflow:hidden; font-family:'Arial Black',Arial,sans-serif; }
+    canvas { display:block; touch-action:none; }
+
+    #hud {
+      position:fixed; top:0; left:0; right:0; height:48px;
+      background:rgba(0,0,0,0.78);
+      display:flex; align-items:center; justify-content:space-between;
+      padding:0 18px; color:white; font-size:clamp(13px,3.5vw,18px); font-weight:900;
+      z-index:5; pointer-events:none; letter-spacing:0.3px;
+    }
+    #hud span { text-shadow:1px 1px 3px rgba(0,0,0,0.8); }
+
+    #controls {
+      position:fixed; bottom:0; left:0; right:0; height:30vh;
+      display:flex; z-index:5;
+    }
+    .ctrl {
+      flex:1; display:flex; align-items:center; justify-content:center;
+      color:rgba(255,255,255,0.32); font-size:clamp(44px,14vw,70px);
+      background:transparent; border-top:2px solid rgba(255,255,255,0.1);
+      cursor:pointer; user-select:none; -webkit-user-select:none;
+    }
+    .ctrl.on { background:rgba(255,255,255,0.15); color:rgba(255,255,255,0.72); }
+
+    #overlay {
+      position:fixed; inset:0; background:rgba(0,0,0,0.87);
+      display:flex; flex-direction:column; align-items:center; justify-content:center;
+      z-index:20; padding:24px; text-align:center;
+    }
+    #overlay.hidden { display:none; }
+
+    .ov-icon { font-size:clamp(54px,16vw,86px); line-height:1.1; }
+    .ov-title {
+      font-size:clamp(28px,8vw,52px); color:#E4002B;
+      text-shadow:3px 3px 0 #fff; margin:10px 0 6px; line-height:1.1;
+    }
+    .ov-sub {
+      color:white; font-size:clamp(15px,4vw,20px);
+      margin-bottom:24px; line-height:1.6; font-weight:normal;
+    }
+    #start-btn {
+      background:linear-gradient(180deg,#E4002B,#b00020);
+      color:white; border:3px solid white;
+      padding:14px 44px; font-size:clamp(19px,5vw,26px);
+      font-weight:900; border-radius:12px; cursor:pointer;
+      box-shadow:0 5px 0 #700, 0 8px 24px rgba(0,0,0,0.5);
+      letter-spacing:0.5px;
+    }
+    #start-btn:active { transform:translateY(2px); box-shadow:0 3px 0 #700; }
+
+    #cdnum {
+      position:fixed; top:50%; left:50%; transform:translate(-50%,-50%);
+      font-size:clamp(90px,26vw,140px); font-weight:900;
+      color:#E4002B; text-shadow:4px 4px 0 white, 0 0 50px rgba(228,0,43,0.6);
+      z-index:15; pointer-events:none; display:none;
+    }
+  </style>
+</head>
+<body>
+
+<canvas id="c"></canvas>
+
+<div id="hud">
+  <span id="lap-t">Lap 1 / 3</span>
+  <span id="pos-t">🏁 1st Place</span>
+</div>
+<div id="controls">
+  <div class="ctrl" id="lc">◀</div>
+  <div class="ctrl" id="rc">▶</div>
+</div>
+<div id="cdnum">3</div>
+
+<div id="overlay">
+  <div class="ov-icon">🐄</div>
+  <div class="ov-title">HENRY'S<br>CFA RACE!</div>
+  <p class="ov-sub">Tap ◀ ▶ to steer your car<br>Complete 3 laps to win! 🏆</p>
+  <button id="start-btn" onclick="startGame()">🏁 START RACE!</button>
+</div>
+
+<script>
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+
+function resize() { cv.width = innerWidth; cv.height = innerHeight; }
+resize();
+addEventListener('resize', () => { resize(); if (wps) wps = makeWps(); });
+
+// --- Track geometry ---
+function G() {
+  const W = cv.width, H = cv.height;
+  const hh = 48, ch = H * 0.30;
+  const ph = H - hh - ch;
+  const mx = W / 2, my = hh + ph / 2;
+  const rx = W * 0.38, ry = ph * 0.40;
+  const tw = Math.min(W * 0.14, ph * 0.22, 85);
+  return { W, H, mx, my, rx, ry, tw };
+}
+
+function makeWps(n = 80) {
+  const { mx, my, rx, ry } = G();
+  return Array.from({ length: n }, (_, i) => {
+    const a = (i / n) * Math.PI * 2 - Math.PI / 2;
+    return { x: mx + Math.cos(a) * rx, y: my + Math.sin(a) * ry };
+  });
+}
+
+// 0 = top of oval, 0.25 = right, 0.5 = bottom, 0.75 = left (clockwise)
+function getProgress(x, y) {
+  const { mx, my, rx, ry } = G();
+  const a = Math.atan2((y - my) / ry, (x - mx) / rx);
+  let p = (a + Math.PI / 2) / (Math.PI * 2);
+  return p < 0 ? p + 1 : p;
+}
+
+function isOnTrack(x, y) {
+  const { mx, my, rx, ry, tw } = G();
+  const o = ((x - mx) / rx) ** 2 + ((y - my) / ry) ** 2;
+  const i = ((x - mx) / (rx - tw)) ** 2 + ((y - my) / (ry - tw)) ** 2;
+  return o <= 1.06 && i >= 0.94;
+}
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.arcTo(x + w, y, x + w, y + r, r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+  ctx.lineTo(x + r, y + h);
+  ctx.arcTo(x, y + h, x, y + h - r, r);
+  ctx.lineTo(x, y + r);
+  ctx.arcTo(x, y, x + r, y, r);
+  ctx.closePath();
+}
+
+// --- Car ---
+class Car {
+  constructor(x, y, color, isPlayer, wpStart) {
+    this.x = x; this.y = y;
+    this.ang = 0; // 0 = east (right), clockwise positive
+    this.spd = 0;
+    this.top = isPlayer ? 5.0 : 3.1 + Math.random() * 1.3;
+    this.color = color;
+    this.isP = isPlayer;
+    this.wpi = wpStart || 0;
+    this.laps = 0;
+    this.pp = null;
+    this.done = false;
+    this.trail = [];
+    this.W = 16; this.H = 26;
+  }
+
+  update(inp, wps) {
+    if (this.done) { this.spd *= 0.97; return; }
+
+    if (this.isP) {
+      const steer = Math.max(0.35, this.spd / this.top * 0.75 + 0.3);
+      if (inp.left)  this.ang -= 0.048 * steer;
+      if (inp.right) this.ang += 0.048 * steer;
+      this.spd = Math.min(this.spd + 0.15, this.top);
+    } else {
+      const wp = wps[Math.floor(this.wpi) % wps.length];
+      const da = Math.atan2(wp.y - this.y, wp.x - this.x) - this.ang;
+      const diff = ((da + Math.PI) % (Math.PI * 2)) - Math.PI;
+      this.ang += Math.sign(diff) * Math.min(Math.abs(diff), 0.055);
+      this.spd = Math.min(this.spd + 0.08, this.top);
+      if (Math.hypot(wp.x - this.x, wp.y - this.y) < 22)
+        this.wpi = (this.wpi + 1) % wps.length;
+    }
+
+    if (!isOnTrack(this.x, this.y)) this.spd *= 0.88;
+    this.spd = Math.max(this.spd * 0.968, 0.2);
+    this.x += Math.cos(this.ang) * this.spd;
+    this.y += Math.sin(this.ang) * this.spd;
+
+    this.trail.push({ x: this.x, y: this.y });
+    if (this.trail.length > 18) this.trail.shift();
+
+    // Lap detection: progress wraps from ~1 back to ~0
+    const p = getProgress(this.x, this.y);
+    if (this.pp !== null && this.pp > 0.87 && p < 0.13) this.laps++;
+    this.pp = p;
+  }
+
+  draw(label) {
+    // Dust trail
+    this.trail.forEach((pt, i) => {
+      ctx.fillStyle = `rgba(165,110,50,${(i / this.trail.length) * 0.13})`;
+      ctx.beginPath(); ctx.arc(pt.x, pt.y, 4, 0, Math.PI * 2); ctx.fill();
+    });
+
+    ctx.save();
+    ctx.translate(this.x, this.y);
+    ctx.rotate(this.ang + Math.PI / 2);
+
+    // Shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.22)';
+    ctx.beginPath();
+    ctx.ellipse(2, 4, this.W * 0.5, this.H * 0.3, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Body
+    ctx.fillStyle = this.color;
+    roundRect(-this.W / 2, -this.H / 2, this.W, this.H, 4);
+    ctx.fill();
+
+    // Windshield
+    ctx.fillStyle = 'rgba(190,238,255,0.82)';
+    roundRect(-this.W / 2 + 2, -this.H / 2 + 3, this.W - 4, this.H * 0.27, 2);
+    ctx.fill();
+
+    // Wheels
+    ctx.fillStyle = '#1a1a1a';
+    [ [-this.W/2-2, -this.H/2+4], [this.W/2-2, -this.H/2+4],
+      [-this.W/2-2,  this.H/2-9], [this.W/2-2,  this.H/2-9] ]
+      .forEach(([wx, wy]) => ctx.fillRect(wx, wy, 4, 8));
+
+    ctx.restore();
+
+    // Emoji label
+    ctx.save();
+    ctx.translate(this.x, this.y);
+    ctx.font = '11px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, 0, 4);
+    ctx.restore();
+  }
+}
+
+// --- State ---
+let wps, player, ais;
+let inp = { left: false, right: false };
+let gs = 'menu';
+let finishers = [];
+let raf;
+
+const AI_CFG = [
+  { color: '#111111', label: '🍗', name: 'Nugget' },
+  { color: '#d47f00', label: '🥤', name: 'Lemonade' },
+  { color: '#1e5218', label: '🧇', name: 'Waffle Fry' },
+];
+
+function init() {
+  wps = makeWps();
+  const { mx, my, ry } = G();
+  const sy = my - ry;
+
+  // 2x2 start grid at top of oval
+  const sp = [
+    [mx - 12, sy + 10],
+    [mx + 12, sy + 10],
+    [mx - 12, sy + 42],
+    [mx + 12, sy + 42],
+  ];
+
+  player = new Car(sp[0][0], sp[0][1], '#E4002B', true, 0);
+  ais = AI_CFG.map((cfg, i) => new Car(sp[i+1][0], sp[i+1][1], cfg.color, false, 0));
+  finishers = [];
+}
+
+// --- Drawing ---
+function drawTrack() {
+  const { W, H, mx, my, rx, ry, tw } = G();
+
+  // Dirt background
+  ctx.fillStyle = '#6b3e1a';
+  ctx.fillRect(0, 0, W, H);
+
+  // Subtle texture
+  ctx.fillStyle = 'rgba(0,0,0,0.06)';
+  for (let i = 0; i < 200; i++) {
+    const tx = ((i * 137.5) % W + W) % W;
+    const ty = ((i * 91.3) % H + H) % H;
+    ctx.beginPath(); ctx.arc(tx, ty, 1.5 + (i % 3), 0, Math.PI * 2); ctx.fill();
+  }
+
+  // Infield grass
+  ctx.fillStyle = '#2e5c24';
+  ctx.beginPath(); ctx.ellipse(mx, my, rx - tw, ry - tw, 0, 0, Math.PI * 2); ctx.fill();
+
+  // Infield grass stripes
+  ctx.lineWidth = 9; ctx.strokeStyle = '#376b2a';
+  for (let s = -2; s <= 2; s++) {
+    const sy2 = my + s * (ry - tw) * 0.4;
+    const ex = Math.sqrt(Math.max(0, 1 - ((sy2 - my) / (ry - tw)) ** 2)) * (rx - tw);
+    ctx.beginPath(); ctx.moveTo(mx - ex, sy2); ctx.lineTo(mx + ex, sy2); ctx.stroke();
+  }
+
+  // Track surface
+  ctx.strokeStyle = '#b57a35';
+  ctx.lineWidth = tw;
+  ctx.beginPath(); ctx.ellipse(mx, my, rx - tw / 2, ry - tw / 2, 0, 0, Math.PI * 2); ctx.stroke();
+
+  // Outer/inner barriers
+  ctx.strokeStyle = '#3a1c08'; ctx.lineWidth = 5;
+  ctx.beginPath(); ctx.ellipse(mx, my, rx, ry, 0, 0, Math.PI * 2); ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(mx, my, rx - tw, ry - tw, 0, 0, Math.PI * 2); ctx.stroke();
+
+  // White edge dashes
+  ctx.strokeStyle = 'rgba(255,255,255,0.55)'; ctx.lineWidth = 2.5; ctx.setLineDash([18, 12]);
+  ctx.beginPath(); ctx.ellipse(mx, my, rx - 3, ry - 3, 0, 0, Math.PI * 2); ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(mx, my, rx - tw + 3, ry - tw + 3, 0, 0, Math.PI * 2); ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Center yellow dashes
+  ctx.strokeStyle = 'rgba(255,220,0,0.42)'; ctx.lineWidth = 2; ctx.setLineDash([12, 12]);
+  ctx.beginPath(); ctx.ellipse(mx, my, rx - tw / 2, ry - tw / 2, 0, 0, Math.PI * 2); ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Start/finish line (at top of oval, vertical checkered strip)
+  const sfx = mx, sfy = my - ry;
+  const sqH = tw / 7, sqW = 10;
+  ctx.save(); ctx.translate(sfx, sfy);
+  for (let i = 0; i < 7; i++) {
+    ctx.fillStyle = i % 2 === 0 ? 'white' : 'black';
+    ctx.fillRect(-sqW / 2, -tw / 2 + i * sqH, sqW, sqH);
+  }
+  ctx.restore();
+
+  // Infield text
+  const fs = Math.max(10, Math.min(W, H) * 0.033);
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.shadowColor = 'rgba(0,0,0,0.6)'; ctx.shadowBlur = 6;
+  ctx.font = `900 ${fs}px Arial Black, Arial`;
+  ctx.fillStyle = '#E4002B';
+  ctx.fillText('🐄 EAT MOR CHIKIN 🐄', mx, my - fs * 0.4);
+  ctx.font = `bold ${fs * 0.7}px Arial`;
+  ctx.fillStyle = 'white'; ctx.shadowBlur = 3;
+  ctx.fillText("HENRY'S SPEEDWAY", mx, my + fs * 0.85);
+  ctx.shadowBlur = 0;
+}
+
+function updateHUD() {
+  document.getElementById('lap-t').textContent = `Lap ${Math.min(player.laps + 1, 3)} / 3`;
+  const all = [player, ...ais];
+  const sorted = [...all].sort((a, b) =>
+    (b.laps + getProgress(b.x, b.y)) - (a.laps + getProgress(a.x, a.y))
+  );
+  const pos = sorted.indexOf(player) + 1;
+  const places = ['1st 🥇', '2nd 🥈', '3rd 🥉', '4th'];
+  document.getElementById('pos-t').textContent = places[pos - 1] || pos + 'th';
+}
+
+// --- Game loop ---
+function loop() {
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  drawTrack();
+
+  if (gs !== 'menu' && player) {
+    ais.forEach((a, i) => a.draw(AI_CFG[i].label));
+    player.draw('🐄');
+
+    if (gs === 'race') {
+      player.update(inp, wps);
+      ais.forEach(a => a.update(null, wps));
+
+      if (player.laps >= 3 && !player.done) {
+        player.done = true;
+        finishers.push('Henry');
+        showEnd(finishers.length === 1);
+      }
+      ais.forEach((a, i) => {
+        if (a.laps >= 3 && !a.done) {
+          a.done = true;
+          finishers.push(AI_CFG[i].name);
+        }
+      });
+
+      updateHUD();
+    }
+  }
+
+  raf = requestAnimationFrame(loop);
+}
+
+// --- Start / End ---
+function startGame() {
+  document.getElementById('overlay').classList.add('hidden');
+  init();
+  gs = 'cdwn';
+
+  let n = 3;
+  const el = document.getElementById('cdnum');
+  el.style.display = 'block'; el.textContent = '3';
+
+  const iv = setInterval(() => {
+    n--;
+    if (n > 0) { el.textContent = n; }
+    else if (n === 0) { el.textContent = 'GO! 🏁'; }
+    else {
+      el.style.display = 'none';
+      gs = 'race';
+      clearInterval(iv);
+    }
+  }, 850);
+}
+
+function showEnd(won) {
+  gs = 'done';
+  const ov = document.getElementById('overlay');
+  ov.classList.remove('hidden');
+  ov.innerHTML = `
+    <div class="ov-icon">${won ? '🏆' : '🐄'}</div>
+    <div class="ov-title">${won ? 'YOU WIN!' : 'Great Try!'}</div>
+    <p class="ov-sub">${won
+      ? '🎉 Amazing race, Henry!<br>You beat all the CFA cars!'
+      : '👏 Good race, Henry!<br>Race again — you got this!'
+    }</p>
+    <button id="start-btn" onclick="startGame()"
+      style="background:linear-gradient(180deg,#E4002B,#b00020);color:white;border:3px solid white;
+             padding:14px 44px;font-size:clamp(19px,5vw,26px);font-weight:900;
+             border-radius:12px;cursor:pointer;box-shadow:0 5px 0 #700,0 8px 24px rgba(0,0,0,0.5);">
+      🏁 RACE AGAIN!
+    </button>
+  `;
+}
+
+// --- Controls ---
+function bindCtrl(el, key) {
+  el.addEventListener('touchstart',  e => { e.preventDefault(); inp[key]=true;  el.classList.add('on');    }, { passive: false });
+  el.addEventListener('touchend',    e => { e.preventDefault(); inp[key]=false; el.classList.remove('on'); }, { passive: false });
+  el.addEventListener('touchcancel', e => {                      inp[key]=false; el.classList.remove('on'); }, { passive: false });
+  el.addEventListener('mousedown',   () => { inp[key]=true;  el.classList.add('on');    });
+  el.addEventListener('mouseup',     () => { inp[key]=false; el.classList.remove('on'); });
+  el.addEventListener('mouseleave',  () => { inp[key]=false; el.classList.remove('on'); });
+}
+bindCtrl(document.getElementById('lc'), 'left');
+bindCtrl(document.getElementById('rc'), 'right');
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowLeft'  || e.key === 'a') inp.left  = true;
+  if (e.key === 'ArrowRight' || e.key === 'd') inp.right = true;
+});
+document.addEventListener('keyup', e => {
+  if (e.key === 'ArrowLeft'  || e.key === 'a') inp.left  = false;
+  if (e.key === 'ArrowRight' || e.key === 'd') inp.right = false;
+});
+
+// Start
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
